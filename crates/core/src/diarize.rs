@@ -381,9 +381,42 @@ fn diarize_with_pyannote_rs(
         .into());
     }
 
-    // Load audio — pyannote-rs needs mono 16-bit PCM.
+    // Load audio — pyannote-rs needs mono 16-bit PCM at 16kHz.
     // Use symphonia to decode any format, then convert to i16 samples.
-    let (samples, sample_rate) = load_audio_as_i16(audio_path)?;
+    let (raw_samples, source_rate) = load_audio_as_i16(audio_path)?;
+
+    // Resample to 16kHz if needed — pyannote segmentation model expects 16kHz.
+    // This is a fallback for when ffmpeg preprocessing didn't run or the file
+    // was already at a non-16kHz rate.
+    let (mut samples, sample_rate) = if source_rate != 16000 {
+        tracing::info!(
+            source_rate = source_rate,
+            "resampling audio to 16kHz for diarization"
+        );
+        let ratio = source_rate as f64 / 16000.0;
+        let new_len = (raw_samples.len() as f64 / ratio) as usize;
+        let resampled: Vec<i16> = (0..new_len)
+            .map(|i| {
+                let src_idx = (i as f64 * ratio) as usize;
+                raw_samples[src_idx.min(raw_samples.len() - 1)]
+            })
+            .collect();
+        (resampled, 16000u32)
+    } else {
+        (raw_samples, source_rate)
+    };
+
+    // pyannote segmentation-3.0 processes in 10-second windows.
+    // If the audio is shorter, pad with silence so the model can produce segments.
+    let min_samples = (sample_rate as usize) * 10;
+    if samples.len() < min_samples {
+        tracing::debug!(
+            current = samples.len(),
+            required = min_samples,
+            "padding audio to minimum 10s for segmentation model"
+        );
+        samples.resize(min_samples, 0i16);
+    }
 
     tracing::info!(
         samples = samples.len(),
