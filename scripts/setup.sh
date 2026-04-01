@@ -2,7 +2,7 @@
 # setup.sh — One-command setup for Minutes after cloning the repo.
 #
 # Usage:
-#   git clone https://github.com/silverstein/minutes.git
+#   git clone -b shipd https://github.com/searchformyusername/minutes.git
 #   cd minutes
 #   ./scripts/setup.sh
 #
