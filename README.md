@@ -539,20 +539,29 @@ Only **High**-confidence attributions rewrite transcript labels. Medium/Low are 
 name = "Your Name"
 
 # Enroll your voice (Level 2)
-minutes enroll                    # Record 10s sample
+minutes enroll                    # Record 15s sample
 minutes enroll --file sample.wav  # Or from existing audio
+minutes enroll -D "MacBook Pro Microphone"  # Pick a specific mic
+
+# Enroll other people's voices
+minutes enroll --name "Priya"                         # Record their voice
+minutes enroll --name "Meena" --file ~/meena-audio.m4a  # From existing audio
+
+# Improve accuracy — re-enrolling blends with the existing profile
+minutes enroll --name "Priya"     # Each enrollment adds a sample and averages the voiceprint
 
 # Confirm attributions after a meeting (Level 3)
 minutes confirm --meeting ~/meetings/2026-03-25-standup.md
 minutes confirm --meeting path.md --speaker SPEAKER_1 --name "Sarah" --save-voice
 
 # Manage voice profiles
-minutes voices              # List profiles
-minutes voices --json       # JSON output
-minutes voices --delete     # Remove all profiles
+minutes voices                        # List profiles
+minutes voices --json                 # JSON output
+minutes voices --delete               # Remove all profiles
+minutes voices --delete-name "Priya"  # Remove a specific profile
 ```
 
-**Privacy**: Voice enrollment is self-only (no enrolling others). Level 3 confirmed profiles require explicit opt-in per person. Voice embeddings are stored locally in `~/.minutes/voices.db` with 0600 permissions. Nothing leaves your machine.
+**Privacy**: Voice embeddings are stored locally in `~/.minutes/voices.db` with 0600 permissions. Nothing leaves your machine.
 
 > **Platform notes:** Calendar integration (auto-detecting meeting attendees) requires macOS. Screen context capture works on macOS and Linux. The voice memo pipeline works on all platforms — any folder sync (iCloud, Dropbox, Google Drive, Syncthing) can feed the watcher. The `minutes service install` auto-start command requires macOS (launchd); on Linux, use systemd or cron. Speaker diarization (`pyannote-rs`) works on all platforms (CLI, Tauri app, and via MCP). All other features — recording, transcription, search, action items, person profiles — work on all platforms.
 
