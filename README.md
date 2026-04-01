@@ -65,7 +65,9 @@ minutes stop                    # Stop and transcribe
 > 
 > [diarization]
 > engine = "pyannote-rs"
+> threshold = 0.3
 > ```
+> The diarization `threshold` controls speaker clustering sensitivity (0.0–1.0). Lower values merge more aggressively (fewer speakers). Default is 0.5, but 0.3 works better for noisy audio or single-mic setups.
 
 ## How it works
 
