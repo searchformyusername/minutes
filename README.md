@@ -540,15 +540,20 @@ name = "Your Name"
 
 # Enroll your voice (Level 2)
 minutes enroll                    # Record 15s sample
-minutes enroll --file sample.wav  # Or from existing audio
+minutes enroll --file sample.wav  # Or from existing audio (wav, m4a, mp3, ogg)
 minutes enroll -D "MacBook Pro Microphone"  # Pick a specific mic
 
 # Enroll other people's voices
 minutes enroll --name "Priya"                         # Record their voice
 minutes enroll --name "Meena" --file ~/meena-audio.m4a  # From existing audio
 
+# Enroll from a pre-recorded meeting or voice memo where the person is the only/primary speaker
+minutes enroll --name "Rahul" --file ~/meetings-audio/rahul-standup.m4a
+minutes enroll --file ~/Downloads/my-voice-note.m4a   # Enroll yourself from a voice memo
+
 # Improve accuracy — re-enrolling blends with the existing profile
 minutes enroll --name "Priya"     # Each enrollment adds a sample and averages the voiceprint
+minutes enroll --name "Priya" --file ~/another-recording.m4a  # Blend from multiple recordings
 
 # Confirm attributions after a meeting (Level 3)
 minutes confirm --meeting ~/meetings/2026-03-25-standup.md
@@ -567,25 +572,48 @@ minutes voices --delete-name "Priya"  # Remove a specific profile
 
 ### Desktop app
 
+The desktop app is a Tauri v2 menu bar application with recording controls, audio visualizer, meeting list, and a built-in AI Assistant. It shares `minutes-core` with the CLI — same engine, same features.
+
+**Install (prebuilt):**
 ```bash
 # macOS — Homebrew cask (recommended)
 brew install --cask silverstein/tap/minutes
+```
 
-# macOS — build from source
+**Build from source (macOS):**
+```bash
+# Prerequisites: Rust, cmake, ffmpeg, and Tauri CLI
+brew install cmake ffmpeg
+cargo install tauri-cli --version 2.10.1 --locked
+
+# Build the app bundle
 export CXXFLAGS="-I$(xcrun --show-sdk-path)/usr/include/c++/v1"
 export MACOSX_DEPLOYMENT_TARGET=11.0
 cargo tauri build --bundles app
 
-# macOS — local desktop development with stable permissions
-./scripts/install-dev-app.sh
+# Launch it
+open target/release/bundle/macos/Minutes.app
+
+# Or use the full build script (CLI + desktop app + calendar helper)
+./scripts/build.sh
+./scripts/build.sh --install   # Also copies .app to /Applications
 ```
 
+**Build from source (Windows):**
 ```powershell
-# Windows — build desktop installer from source
 cargo install tauri-cli --version 2.10.1 --locked
 cd tauri/src-tauri
 cargo tauri build --ci --bundles nsis --no-sign
 ```
+
+**What the desktop app provides:**
+- System tray icon with quick recording start/stop
+- Audio level visualizer during recording
+- Meeting list with search
+- Built-in AI Assistant (Claude-powered, singleton workspace)
+- Live Mode toggle for real-time transcription
+- Call detection banners (Zoom, Teams, Webex)
+- Dictation shortcut (`Cmd+Shift+D`)
 
 Tagged GitHub releases can include both a Windows NSIS installer as `minutes-desktop-windows-x64-setup.exe` and a raw desktop binary as `minutes-desktop-windows-x64.exe`. The installer is currently unsigned, so treat it as an advanced-user / preview distribution surface until Windows signing is added.
 
