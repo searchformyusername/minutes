@@ -376,12 +376,36 @@ where
     }
 
     let mut speaker_map: Vec<diarize::SpeakerAttribution> = Vec::new();
-    let mut enrolled_profile_found: Option<String> = None;
     if diarization_num_speakers > 0 && artifact.frontmatter.r#type == ContentType::Meeting {
-        if let Some(self_profile) = crate::voice::load_self_profile(config) {
-            enrolled_profile_found = Some(self_profile.name.clone());
+        // Level 3: Voice enrollment matching via embedding comparison
+        if !diarization_embeddings.is_empty() {
+            let id_result =
+                crate::identify::identify_speakers(&diarization_embeddings, config);
+            if !id_result.attributions.is_empty() {
+                tracing::info!(
+                    matched = id_result.attributions.len(),
+                    unmatched = id_result.unmatched.len(),
+                    "Level 3: voice enrollment speaker identification"
+                );
+            }
+            for attr in id_result.attributions {
+                speaker_map.push(attr);
+            }
         }
 
+        // Level 0: deterministic 1-on-1 mapping (for speakers not matched by enrollment)
+        // Collect both labels and names already assigned by Level 3 so we don't
+        // duplicate or contradict enrollment-based matches.
+        // Use slugified first-name matching so "Kush" and "Kush Patel" are treated
+        // as the same person (enrollment may store a shorter variant).
+        let enrolled_labels: std::collections::HashSet<String> = speaker_map
+            .iter()
+            .map(|a| a.speaker_label.clone())
+            .collect();
+        let enrolled_slugs: Vec<String> = speaker_map
+            .iter()
+            .map(|a| slugify(&a.name))
+            .collect();
         let transcript_labels = crate::summarize::extract_speaker_labels_pub(&transcript);
         if !attendees.is_empty()
             && diarization_num_speakers == attendees.len()
@@ -394,32 +418,34 @@ where
                     .iter()
                     .find(|attendee| slugify(attendee) != my_slug);
                 if let Some(other_name) = other {
-                    let my_confidence = if enrolled_profile_found.is_some() {
-                        diarize::Confidence::High
-                    } else {
-                        diarize::Confidence::Medium
-                    };
-                    let my_source = if enrolled_profile_found.is_some() {
-                        diarize::AttributionSource::Enrollment
-                    } else {
-                        diarize::AttributionSource::Deterministic
-                    };
-                    speaker_map.push(diarize::SpeakerAttribution {
-                        speaker_label: transcript_labels[0].clone(),
-                        name: my_name.clone(),
-                        confidence: my_confidence,
-                        source: my_source,
-                    });
-                    speaker_map.push(diarize::SpeakerAttribution {
-                        speaker_label: transcript_labels[1].clone(),
-                        name: other_name.clone(),
-                        confidence: diarize::Confidence::Medium,
-                        source: diarize::AttributionSource::Deterministic,
-                    });
+                    let remaining_labels: Vec<&String> = transcript_labels
+                        .iter()
+                        .filter(|l| !enrolled_labels.contains(*l))
+                        .collect();
+                    let all_names = [my_name.as_str(), other_name.as_str()];
+                    let remaining_names: Vec<&str> = all_names
+                        .iter()
+                        .filter(|n| {
+                            let s = slugify(n);
+                            !enrolled_slugs.iter().any(|es| {
+                                s == *es || s.starts_with(&format!("{}-", es)) || es.starts_with(&format!("{}-", s))
+                            })
+                        })
+                        .copied()
+                        .collect();
+                    for (label, name) in remaining_labels.iter().zip(remaining_names.iter()) {
+                        speaker_map.push(diarize::SpeakerAttribution {
+                            speaker_label: (*label).clone(),
+                            name: name.to_string(),
+                            confidence: diarize::Confidence::Medium,
+                            source: diarize::AttributionSource::Deterministic,
+                        });
+                    }
                 }
             }
         }
 
+        // Level 1: LLM suggestions for unmapped speakers
         let mapped_labels: std::collections::HashSet<String> = speaker_map
             .iter()
             .map(|attribution| attribution.speaker_label.clone())
@@ -737,35 +763,36 @@ where
     }
 
     // Step 4b: Speaker attribution
-    // Level 2 → Level 0 → Level 1 (voice enrollment → deterministic → LLM)
+    // Level 3 (voice enrollment) → Level 0 (deterministic) → Level 1 (LLM)
     let mut speaker_map: Vec<diarize::SpeakerAttribution> = Vec::new();
     let mut transcript = transcript;
-    let mut enrolled_profile_found: Option<String> = None;
 
     if diarization_num_speakers > 0 && content_type == ContentType::Meeting {
-        // Level 2: Voice enrollment matching
-        // If the user has enrolled their voice, find which SPEAKER_X is them
-        if let Some(self_profile) = crate::voice::load_self_profile(config) {
-            // Scan transcript for speaker labels and try to match by looking
-            // at the dominant speaker (most lines). In a real implementation,
-            // we'd match per-segment embeddings, but for now we use the fact
-            // that the enrolled user's name + dominant speaker heuristic works.
-            // Full per-segment matching comes with Level 3's extended DiarizationResult.
-            tracing::info!(
-                name = %self_profile.name,
-                "Level 2: enrolled voice profile found"
-            );
-
-            // For now, if identity.name matches an enrolled profile AND Level 0
-            // would assign them, upgrade that assignment to High confidence.
-            // Full embedding-based matching requires per-segment embeddings in
-            // DiarizationResult (Level 3 extension).
-            enrolled_profile_found = Some(self_profile.name.clone());
+        // Level 3: Voice enrollment matching via embedding comparison
+        if !diarization_embeddings.is_empty() {
+            let id_result =
+                crate::identify::identify_speakers(&diarization_embeddings, config);
+            if !id_result.attributions.is_empty() {
+                tracing::info!(
+                    matched = id_result.attributions.len(),
+                    unmatched = id_result.unmatched.len(),
+                    "Level 3: voice enrollment speaker identification"
+                );
+            }
+            for attr in id_result.attributions {
+                speaker_map.push(attr);
+            }
         }
 
-        // Level 0: deterministic 1-on-1 mapping
-        // Extract actual speaker labels from transcript (handles both native SPEAKER_1
-        // and Python subprocess SPEAKER_00 formats)
+        // Level 0: deterministic 1-on-1 mapping (for speakers not matched by enrollment)
+        let enrolled_labels: std::collections::HashSet<String> = speaker_map
+            .iter()
+            .map(|a| a.speaker_label.clone())
+            .collect();
+        let enrolled_slugs: Vec<String> = speaker_map
+            .iter()
+            .map(|a| slugify(&a.name))
+            .collect();
         let transcript_labels = crate::summarize::extract_speaker_labels_pub(&transcript);
 
         if !attendees.is_empty()
@@ -777,36 +804,35 @@ where
                 let my_slug = slugify(my_name);
                 let other = attendees.iter().find(|a| slugify(a) != my_slug);
                 if let Some(other_name) = other {
-                    let my_confidence = if enrolled_profile_found.is_some() {
-                        diarize::Confidence::High
-                    } else {
-                        diarize::Confidence::Medium
-                    };
-                    let my_source = if enrolled_profile_found.is_some() {
-                        diarize::AttributionSource::Enrollment
-                    } else {
-                        diarize::AttributionSource::Deterministic
-                    };
-
-                    speaker_map.push(diarize::SpeakerAttribution {
-                        speaker_label: transcript_labels[0].clone(),
-                        name: my_name.clone(),
-                        confidence: my_confidence,
-                        source: my_source,
-                    });
-                    speaker_map.push(diarize::SpeakerAttribution {
-                        speaker_label: transcript_labels[1].clone(),
-                        name: other_name.clone(),
-                        confidence: diarize::Confidence::Medium,
-                        source: diarize::AttributionSource::Deterministic,
-                    });
-                    tracing::info!(
-                        my_name = %my_name,
-                        my_confidence = ?my_confidence,
-                        other_name = %other_name,
-                        labels = ?transcript_labels,
-                        "Level 0: deterministic 1-on-1 speaker attribution"
-                    );
+                    let remaining_labels: Vec<&String> = transcript_labels
+                        .iter()
+                        .filter(|l| !enrolled_labels.contains(*l))
+                        .collect();
+                    let all_names = [my_name.as_str(), other_name.as_str()];
+                    let remaining_names: Vec<&str> = all_names
+                        .iter()
+                        .filter(|n| {
+                            let s = slugify(n);
+                            !enrolled_slugs.iter().any(|es| {
+                                s == *es || s.starts_with(&format!("{}-", es)) || es.starts_with(&format!("{}-", s))
+                            })
+                        })
+                        .copied()
+                        .collect();
+                    for (label, name) in remaining_labels.iter().zip(remaining_names.iter()) {
+                        speaker_map.push(diarize::SpeakerAttribution {
+                            speaker_label: (*label).clone(),
+                            name: name.to_string(),
+                            confidence: diarize::Confidence::Medium,
+                            source: diarize::AttributionSource::Deterministic,
+                        });
+                    }
+                    if !remaining_labels.is_empty() {
+                        tracing::info!(
+                            labels = ?transcript_labels,
+                            "Level 0: deterministic 1-on-1 speaker attribution (gap-fill)"
+                        );
+                    }
                 }
             }
         }
@@ -1769,4 +1795,5 @@ mod tests {
             .iter()
             .any(|entity| entity.slug == "advisor-platform"));
     }
+
 }

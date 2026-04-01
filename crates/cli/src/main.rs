@@ -428,21 +428,30 @@ enum Commands {
         action: VaultAction,
     },
 
-    /// Enroll your voice for automatic speaker identification
+    /// Enroll a voice for automatic speaker identification
     Enroll {
+        /// Name of the person to enroll (defaults to your identity.name)
+        #[arg(long)]
+        name: Option<String>,
         /// Enroll from an existing audio file instead of recording
         #[arg(long)]
         file: Option<PathBuf>,
-        /// Recording duration in seconds (default: 10)
-        #[arg(long, default_value = "10")]
+        /// Recording duration in seconds (default: 15)
+        #[arg(long, default_value = "15")]
         duration: u64,
+        /// Audio input device name. Use `minutes devices` to list available devices.
+        #[arg(short = 'D', long)]
+        device: Option<String>,
     },
 
     /// List and manage enrolled voice profiles
     Voices {
-        /// Delete your voice profile
+        /// Delete all voice profiles
         #[arg(long)]
         delete: bool,
+        /// Delete a specific voice profile by name
+        #[arg(long)]
+        delete_name: Option<String>,
         /// Output raw JSON
         #[arg(long)]
         json: bool,
@@ -709,8 +718,22 @@ fn main() -> Result<()> {
             VaultAction::Unlink => cmd_vault_unlink(config),
             VaultAction::Sync => cmd_vault_sync(&config),
         },
-        Commands::Enroll { file, duration } => cmd_enroll(file.as_deref(), duration, &config),
-        Commands::Voices { delete, json } => cmd_voices(delete, json),
+        Commands::Enroll {
+            name,
+            file,
+            duration,
+            device,
+        } => {
+            if let Some(dev) = device {
+                config.recording.device = Some(dev);
+            }
+            cmd_enroll(name.as_deref(), file.as_deref(), duration, &config)
+        }
+        Commands::Voices {
+            delete,
+            delete_name,
+            json,
+        } => cmd_voices(delete, delete_name.as_deref(), json),
         Commands::Confirm {
             meeting,
             speaker,
@@ -3486,40 +3509,48 @@ fn cmd_dictate(stdout: bool, note_only: bool, config: &Config) -> Result<()> {
     Ok(())
 }
 
-fn cmd_enroll(file: Option<&Path>, duration: u64, config: &Config) -> Result<()> {
+fn cmd_enroll(
+    explicit_name: Option<&str>,
+    file: Option<&Path>,
+    duration: u64,
+    config: &Config,
+) -> Result<()> {
     use minutes_core::voice;
 
-    // Step 1: Check name — offer to set it if missing
-    let my_name = match config.identity.name.as_ref() {
-        Some(name) if !name.is_empty() => name.clone(),
-        _ => {
-            eprintln!(
-                "Your name isn't set yet. This is needed so Minutes knows which speaker is you."
-            );
-            eprint!("What's your name? ");
-            let mut input = String::new();
-            std::io::stdin().read_line(&mut input)?;
-            let name = input.trim().to_string();
-            if name.is_empty() {
-                return Err(anyhow::anyhow!("Name is required for voice enrollment."));
-            }
-            // Save to config file
-            let config_path = dirs::config_dir()
-                .unwrap_or_else(|| dirs::home_dir().unwrap_or_default().join(".config"))
-                .join("minutes/config.toml");
-            if config_path.exists() {
-                let mut content = std::fs::read_to_string(&config_path)?;
-                if content.contains("[identity]") {
-                    // Add name under existing [identity] section
-                    content =
-                        content.replace("[identity]", &format!("[identity]\nname = \"{}\"", name));
-                } else {
-                    content.push_str(&format!("\n[identity]\nname = \"{}\"\n", name));
+    // Step 1: Determine name — explicit --name, identity.name, or prompt
+    let my_name = if let Some(name) = explicit_name {
+        name.to_string()
+    } else {
+        match config.identity.name.as_ref() {
+            Some(name) if !name.is_empty() => name.clone(),
+            _ => {
+                eprintln!(
+                    "Your name isn't set yet. This is needed so Minutes knows which speaker is you."
+                );
+                eprint!("What's your name? ");
+                let mut input = String::new();
+                std::io::stdin().read_line(&mut input)?;
+                let name = input.trim().to_string();
+                if name.is_empty() {
+                    return Err(anyhow::anyhow!("Name is required for voice enrollment."));
                 }
-                std::fs::write(&config_path, content)?;
-                eprintln!("Saved to {}", config_path.display());
+                // Save to config file
+                let config_path = dirs::config_dir()
+                    .unwrap_or_else(|| dirs::home_dir().unwrap_or_default().join(".config"))
+                    .join("minutes/config.toml");
+                if config_path.exists() {
+                    let mut content = std::fs::read_to_string(&config_path)?;
+                    if content.contains("[identity]") {
+                        content = content
+                            .replace("[identity]", &format!("[identity]\nname = \"{}\"", name));
+                    } else {
+                        content.push_str(&format!("\n[identity]\nname = \"{}\"\n", name));
+                    }
+                    std::fs::write(&config_path, content)?;
+                    eprintln!("Saved to {}", config_path.display());
+                }
+                name
             }
-            name
         }
     };
 
@@ -3634,7 +3665,12 @@ fn cmd_enroll(file: Option<&Path>, duration: u64, config: &Config) -> Result<()>
         .collect::<String>()
         .trim_matches('-')
         .to_string();
-    voice::save_profile_blended(&conn, &slug, &my_name, &embedding, "self-enrollment")
+    let source = if explicit_name.is_some() {
+        "enrollment"
+    } else {
+        "self-enrollment"
+    };
+    voice::save_profile_blended(&conn, &slug, &my_name, &embedding, source)
         .map_err(|e| anyhow::anyhow!("{}", e))?;
 
     let profiles = voice::list_profiles(&conn).map_err(|e| anyhow::anyhow!("{}", e))?;
@@ -3778,10 +3814,29 @@ fn extract_dominant_embedding(_: &Path, _: &str, _: &Config) -> Result<Vec<f32>>
     Err(anyhow::anyhow!("Voice enrollment requires the 'diarize' feature. Rebuild with: cargo build --features diarize"))
 }
 
-fn cmd_voices(delete: bool, json: bool) -> Result<()> {
+fn cmd_voices(delete_all: bool, delete_name: Option<&str>, json: bool) -> Result<()> {
     use minutes_core::voice;
     let conn = voice::open_db().map_err(|e| anyhow::anyhow!("{}", e))?;
-    if delete {
+
+    // Delete a specific profile by name
+    if let Some(name) = delete_name {
+        let slug: String = name
+            .to_lowercase()
+            .chars()
+            .map(|c: char| if c.is_alphanumeric() { c } else { '-' })
+            .collect::<String>()
+            .trim_matches('-')
+            .to_string();
+        if voice::delete_profile(&conn, &slug).map_err(|e| anyhow::anyhow!("{}", e))? {
+            eprintln!("Deleted voice profile: {}", name);
+        } else {
+            eprintln!("No voice profile found for: {}", name);
+        }
+        return Ok(());
+    }
+
+    // Delete all profiles
+    if delete_all {
         let profiles = voice::list_profiles(&conn).map_err(|e| anyhow::anyhow!("{}", e))?;
         if profiles.is_empty() {
             eprintln!("No voice profiles enrolled.");
@@ -3793,6 +3848,8 @@ fn cmd_voices(delete: bool, json: bool) -> Result<()> {
         }
         return Ok(());
     }
+
+    // List profiles
     let profiles = voice::list_profiles(&conn).map_err(|e| anyhow::anyhow!("{}", e))?;
     if json {
         println!("{}", serde_json::to_string_pretty(&profiles)?);
@@ -3802,7 +3859,7 @@ fn cmd_voices(delete: bool, json: bool) -> Result<()> {
         eprintln!("No voice profiles enrolled.\nRun: minutes enroll");
         return Ok(());
     }
-    eprintln!("Voice profiles:");
+    eprintln!("Enrolled speakers ({}):", profiles.len());
     for p in &profiles {
         eprintln!(
             "  {} — {} samples, {} ({})",
