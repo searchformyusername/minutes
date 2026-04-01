@@ -3654,7 +3654,15 @@ fn cmd_enroll(
         .unwrap_or("SPEAKER_1");
 
     eprintln!("  \x1b[2mComputing voice profile...\x1b[0m");
-    let embedding = extract_dominant_embedding(&audio_path, dominant, config)?;
+
+    // Use the averaged embedding from diarization directly (already computed at
+    // the correct 16kHz sample rate via ffmpeg preprocessing). This avoids
+    // extract_dominant_embedding re-reading the original file at its native rate.
+    let embedding = if let Some(emb) = result.speaker_embeddings.get(dominant) {
+        emb.clone()
+    } else {
+        extract_dominant_embedding(&audio_path, dominant, config)?
+    };
 
     // Step 5: Save
     let conn = voice::open_db().map_err(|e| anyhow::anyhow!("{}", e))?;
