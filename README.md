@@ -37,7 +37,12 @@ brew install --cask silverstein/tap/minutes
 # macOS — CLI only
 brew tap silverstein/tap && brew install minutes
 
-# Any platform — from source (requires Rust + cmake; Windows also needs LLVM)
+# Any platform — from source (one-command setup)
+git clone -b shipd https://github.com/searchformyusername/minutes.git
+cd minutes
+./scripts/setup.sh            # Installs deps, builds CLI, downloads models, configures config.toml
+
+# Or manually — from source (requires Rust + cmake)
 cargo install minutes-cli                          # macOS/Linux
 cargo install minutes-cli --no-default-features    # Windows (see install notes below)
 
@@ -46,10 +51,21 @@ npx minutes-mcp
 ```
 
 ```bash
-minutes setup --model small   # Download whisper model (466MB, recommended)
-minutes record                # Start recording
-minutes stop                  # Stop and transcribe
+# If you used setup.sh, everything is ready. Otherwise:
+minutes setup --model large-v3  # Download whisper model (best quality, ~1.5GB)
+minutes setup --diarization     # Download speaker diarization models
+minutes record                  # Start recording
+minutes stop                    # Stop and transcribe
 ```
+
+> **Note:** `setup.sh` automatically creates `~/.config/minutes/config.toml` with optimal settings. If you install manually, create it yourself:
+> ```toml
+> [transcription]
+> model = "large-v3"
+> 
+> [diarization]
+> engine = "pyannote-rs"
+> ```
 
 ## How it works
 

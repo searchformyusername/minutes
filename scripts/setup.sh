@@ -22,7 +22,7 @@
 set -euo pipefail
 
 # ── Defaults ─────────────────────────────────────────────────
-MODEL="small"
+MODEL="large-v3"
 SKIP_DEPS=false
 SKIP_BUILD=false
 
@@ -136,7 +136,24 @@ step "Downloading speaker diarization models"
 minutes setup --diarization
 ok "Diarization models ready"
 
-# ── Step 5: Verify ───────────────────────────────────────────
+# ── Step 5: Configure model in config.toml ───────────────────
+step "Configuring Minutes"
+CONFIG_DIR="$HOME/.config/minutes"
+CONFIG_FILE="$CONFIG_DIR/config.toml"
+mkdir -p "$CONFIG_DIR"
+
+cat > "$CONFIG_FILE" << TOML
+[transcription]
+model = "$MODEL"
+
+[diarization]
+engine = "pyannote-rs"
+TOML
+ok "Created $CONFIG_FILE"
+echo -e "  ${DIM}  model = $MODEL${RESET}"
+echo -e "  ${DIM}  diarization = pyannote-rs${RESET}"
+
+# ── Step 6: Verify ───────────────────────────────────────────
 step "Verifying setup"
 
 echo -e "  ${DIM}Running health check...${RESET}"
