@@ -14,7 +14,7 @@
 #   5. Verifies everything works
 #
 # Options:
-#   --model <name>   Whisper model to download (default: small)
+#   --model <name>   Whisper model to download (default: medium)
 #                    Options: tiny, base, small, medium, large-v3
 #   --skip-deps      Skip system dependency checks
 #   --skip-build     Skip building (only download models)
@@ -22,13 +22,13 @@
 set -euo pipefail
 
 # ── Defaults ─────────────────────────────────────────────────
-MODEL="large-v3"
+MODEL="medium"
 SKIP_DEPS=false
 SKIP_BUILD=false
 
 for arg in "$@"; do
     case "$arg" in
-        --model)   shift; MODEL="${1:-small}"; shift ;;
+        --model)   shift; MODEL="${1:-medium}"; shift ;;
         --model=*) MODEL="${arg#*=}" ;;
         --skip-deps)  SKIP_DEPS=true ;;
         --skip-build) SKIP_BUILD=true ;;
