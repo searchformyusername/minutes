@@ -2803,6 +2803,121 @@ pub async fn cmd_list_voices() -> Result<serde_json::Value, String> {
 }
 
 #[tauri::command]
+pub async fn cmd_enroll_voice(
+    app: tauri::AppHandle,
+    name: String,
+    duration: Option<u64>,
+    enroll_id: Option<String>,
+) -> Result<serde_json::Value, String> {
+    if name.trim().is_empty() {
+        return Err("Name is required".into());
+    }
+    let duration_secs = duration.unwrap_or(10);
+    let enroll_id = enroll_id.unwrap_or_default();
+
+    // Record audio in a blocking thread
+    let app_clone = app.clone();
+    let name_clone = name.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut config = Config::load();
+        if !minutes_core::diarize::models_installed(&config) {
+            return Err("Diarization models not installed. Run: minutes setup --diarization".into());
+        }
+        // Force pyannote-rs engine for enrollment — the Python subprocess engine
+        // does not return speaker embeddings, which are required for voice profiles.
+        config.diarization.engine = "pyannote-rs".to_string();
+
+        let emit = |state: &str| {
+            app_clone.emit("enroll:state", serde_json::json!({
+                "id": enroll_id,
+                "state": state,
+            })).ok();
+        };
+
+        // Step 1: Record audio
+        emit("recording");
+        let tmp_dir = std::env::temp_dir().join("minutes-enroll");
+        std::fs::create_dir_all(&tmp_dir).map_err(|e| e.to_string())?;
+        let tmp_path = tmp_dir.join("enroll-sample.wav");
+        let stop_flag = Arc::new(AtomicBool::new(false));
+        let flag_clone = stop_flag.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_secs(duration_secs));
+            flag_clone.store(true, Ordering::Relaxed);
+        });
+        let record_result = minutes_core::capture::record_to_wav(&tmp_path, stop_flag, &config);
+        if let Err(e) = record_result {
+            std::fs::remove_file(&tmp_path).ok();
+            return Err(e.to_string());
+        }
+
+        // Step 2: Diarize to extract embedding
+        emit("analyzing");
+        let result = match minutes_core::diarize::diarize(&tmp_path, &config) {
+            Some(r) => r,
+            None => {
+                std::fs::remove_file(&tmp_path).ok();
+                return Err("Could not analyze recording. Make sure you spoke clearly.".into());
+            }
+        };
+
+        if result.segments.is_empty() {
+            std::fs::remove_file(&tmp_path).ok();
+            return Err("No speech detected. Check your mic and try again.".into());
+        }
+
+        // Find dominant speaker
+        let mut counts: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+        for seg in &result.segments {
+            *counts.entry(&seg.speaker).or_insert(0) += 1;
+        }
+        let dominant = counts
+            .into_iter()
+            .max_by_key(|(_, c)| *c)
+            .map(|(s, _)| s)
+            .unwrap_or("SPEAKER_1");
+
+        let embedding = match result.speaker_embeddings.get(dominant) {
+            Some(emb) => emb.clone(),
+            None => {
+                std::fs::remove_file(&tmp_path).ok();
+                return Err("Could not extract voice embedding. Try recording in a quieter environment.".into());
+            }
+        };
+
+        // Clean up temp audio before saving (biometric data)
+        std::fs::remove_file(&tmp_path).ok();
+
+        // Step 3: Save profile
+        emit("saving");
+        let conn = minutes_core::voice::open_db().map_err(|e| e.to_string())?;
+        let slug: String = name_clone
+            .to_lowercase()
+            .chars()
+            .map(|c: char| if c.is_alphanumeric() { c } else { '-' })
+            .collect::<String>()
+            .trim_matches('-')
+            .to_string();
+        minutes_core::voice::save_profile_blended(&conn, &slug, &name_clone, &embedding, "enrollment")
+            .map_err(|e| e.to_string())?;
+
+        // Return updated profile
+        let profiles = minutes_core::voice::list_profiles(&conn).map_err(|e| e.to_string())?;
+        let profile = profiles.iter().find(|p| p.person_slug == slug);
+        emit("done");
+        serde_json::to_value(&profile).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn cmd_delete_voice(slug: String) -> Result<bool, String> {
+    let conn = minutes_core::voice::open_db().map_err(|e| e.to_string())?;
+    minutes_core::voice::delete_profile(&conn, &slug).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 pub async fn cmd_confirm_speaker(
     meeting_path: String,
     speaker_label: String,

@@ -2350,6 +2350,20 @@
         </div>
       </div>
 
+      <!-- Voice Profiles -->
+      <div style="margin-bottom: 16px;">
+        <div class="about-item-title">VOICE PROFILES</div>
+        <div class="about-controls-meta" style="padding: 0 4px 8px;">Enroll voices so speakers are identified by name in recordings.</div>
+        <div id="voice-profiles-list" style="padding: 0 4px;"></div>
+        <div style="padding: 4px;">
+          <div style="display: flex; gap: 8px; align-items: center;">
+            <input type="text" id="voice-enroll-name" placeholder="Name" style="flex: 1; padding: 6px 8px; border-radius: 8px; background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.1); color: var(--text); font-size: 13px;">
+            <button class="btn btn-primary btn-sm" id="btn-voice-enroll" style="white-space: nowrap;">Enroll Voice</button>
+          </div>
+          <div id="voice-enroll-status" class="about-controls-meta" style="margin-top: 4px;"></div>
+        </div>
+      </div>
+
       <!-- Summarization -->
       <div style="margin-bottom: 16px;">
         <div class="about-item-title">AUTO-SUMMARIZATION</div>
@@ -4337,6 +4351,7 @@
         }
         loadStorageStats();
         loadVaultStatus();
+        loadVoiceProfiles();
       } catch (e) { console.error('loadSettings:', e); }
     }
 
@@ -4372,6 +4387,90 @@
         }
       } catch (e) { console.error('loadVaultStatus:', e); }
     }
+
+    // ── Voice Profiles ──
+    function escapeHtml(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+    async function loadVoiceProfiles() {
+      try {
+        const profiles = await invoke('cmd_list_voices');
+        const container = document.getElementById('voice-profiles-list');
+        if (!profiles || profiles.length === 0) {
+          container.innerHTML = '<div style="font-size: 12px; color: var(--text-secondary); padding: 4px 0 8px;">No voice profiles enrolled yet.</div>';
+          return;
+        }
+        container.innerHTML = '';
+        for (const p of profiles) {
+          const row = document.createElement('div');
+          row.style.cssText = 'display: flex; align-items: center; justify-content: space-between; padding: 6px 0; border-bottom: 1px solid rgba(255,255,255,0.06);';
+          const info = document.createElement('div');
+          info.innerHTML = `<span style="font-size: 13px; font-weight: 500;">${escapeHtml(p.name)}</span><span style="font-size: 11px; color: var(--text-secondary); margin-left: 8px;">${p.sample_count} sample${p.sample_count !== 1 ? 's' : ''}</span>`;
+          const btn = document.createElement('button');
+          btn.className = 'btn btn-secondary btn-sm';
+          btn.style.cssText = 'font-size: 11px; padding: 2px 8px; opacity: 0.7;';
+          btn.textContent = 'Remove';
+          btn.addEventListener('click', () => deleteVoiceProfile(p.person_slug, p.name));
+          row.appendChild(info);
+          row.appendChild(btn);
+          container.appendChild(row);
+        }
+      } catch (e) { console.error('loadVoiceProfiles:', e); }
+    }
+
+    async function deleteVoiceProfile(slug, name) {
+      try {
+        await invoke('cmd_delete_voice', { slug });
+        loadVoiceProfiles();
+      } catch (e) { console.error('deleteVoice:', e); }
+    }
+
+    let enrolling = false;
+    let currentEnrollId = null;
+    document.getElementById('btn-voice-enroll').addEventListener('click', async () => {
+      if (enrolling) return;
+      const nameInput = document.getElementById('voice-enroll-name');
+      const name = nameInput.value.trim();
+      if (!name) { nameInput.focus(); return; }
+
+      enrolling = true;
+      currentEnrollId = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+      const btn = document.getElementById('btn-voice-enroll');
+      const status = document.getElementById('voice-enroll-status');
+      btn.disabled = true;
+      btn.textContent = 'Recording...';
+      status.textContent = 'Speak for 10 seconds...';
+      status.style.color = 'var(--green)';
+
+      try {
+        const result = await invoke('cmd_enroll_voice', { name, duration: 10, enrollId: currentEnrollId });
+        status.textContent = 'Voice enrolled successfully!';
+        nameInput.value = '';
+        loadVoiceProfiles();
+      } catch (e) {
+        const msg = typeof e === 'string' ? e : (e && e.message) ? e.message : JSON.stringify(e);
+        status.textContent = 'Error: ' + msg;
+        status.style.color = 'var(--red)';
+      } finally {
+        btn.disabled = false;
+        btn.textContent = 'Enroll Voice';
+        enrolling = false;
+        currentEnrollId = null;
+      }
+    });
+
+    const { listen: listenEvent } = window.__TAURI__.event;
+    listenEvent('enroll:state', (event) => {
+      const payload = event.payload;
+      if (!payload || (payload.id && payload.id !== currentEnrollId)) return;
+      const state = payload.state || payload;
+      const status = document.getElementById('voice-enroll-status');
+      const btn = document.getElementById('btn-voice-enroll');
+      switch (state) {
+        case 'recording': status.textContent = 'Speak now...'; btn.textContent = 'Recording...'; break;
+        case 'analyzing': status.textContent = 'Analyzing voice...'; btn.textContent = 'Analyzing...'; break;
+        case 'saving': status.textContent = 'Saving profile...'; btn.textContent = 'Saving...'; break;
+        case 'done': status.textContent = 'Done!'; break;
+      }
+    });
 
     document.getElementById('btn-vault-setup').addEventListener('click', async () => {
       try {
