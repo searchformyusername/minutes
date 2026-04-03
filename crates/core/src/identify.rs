@@ -89,19 +89,17 @@ pub fn identify_speakers(
         }
     }
 
-    // Resolve conflicts: one-to-one mapping (each profile assigned at most once)
-    // Sort by similarity descending so highest-confidence matches win
-    candidates.sort_by(|a, b| b.3.partial_cmp(&a.3).unwrap_or(std::cmp::Ordering::Equal));
-
-    let mut assigned_slugs: std::collections::HashSet<String> = std::collections::HashSet::new();
+    // Allow multiple speaker labels to match the same profile.
+    // Pyannote frequently over-splits one person into multiple SPEAKER_X
+    // labels — all of them should get that person's name. Each speaker label
+    // still maps to at most one profile (its best match above threshold).
     let mut assigned_labels: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut attributions = Vec::new();
 
-    for (label, slug, name, similarity) in &candidates {
-        if assigned_slugs.contains(slug) || assigned_labels.contains(label) {
+    for (label, _slug, name, similarity) in &candidates {
+        if assigned_labels.contains(label) {
             continue;
         }
-        assigned_slugs.insert(slug.clone());
         assigned_labels.insert(label.clone());
 
         tracing::info!(

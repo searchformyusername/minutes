@@ -297,41 +297,45 @@ pub fn apply_speakers(transcript: &str, result: &DiarizationResult) -> String {
 /// Segments MUST be sorted by start time.
 ///
 /// 1. Exact containment: timestamp falls within [start, end)
-/// 2. Gap fallback (0.5s tolerance): if the timestamp falls in a small gap
-///    between segments, prefer the *next* speaker (who is about to talk)
-///    over the previous one (who just stopped). This matches how whisper
-///    floors timestamps to segment boundaries.
-/// 3. Beyond tolerance: return "UNKNOWN" — don't fabricate attribution
-///    for timestamps in silence.
+/// 2. Nearest segment fallback: if the timestamp falls in a gap between
+///    segments, attribute to the nearest segment by time distance.
+///    Pyannote often has gaps in its segment coverage, but whisper confirmed
+///    speech exists at this timestamp — someone spoke these words.
+///    Cap at 10s to avoid attributing distant silence.
 fn find_speaker(time_secs: f64, segments: &[SpeakerSegment]) -> &str {
+    if segments.is_empty() {
+        return "UNKNOWN";
+    }
+
     // Exact containment (binary search since segments are sorted)
     let idx = segments.partition_point(|seg| seg.end <= time_secs);
     if idx < segments.len() && time_secs >= segments[idx].start && time_secs < segments[idx].end {
         return &segments[idx].speaker;
     }
 
-    // Gap fallback: check the surrounding segments within 0.5s tolerance.
-    // Prefer the next segment (speaker about to talk) over the previous one.
-    let tolerance = 0.5;
+    // Nearest segment fallback: pick the closer of prev/next segment.
+    let max_gap = 10.0;
+    let mut best_speaker: Option<&str> = None;
+    let mut best_gap = max_gap;
 
-    // Next segment: idx (the one whose end is > time_secs)
+    // Next segment
     if idx < segments.len() {
         let gap = segments[idx].start - time_secs;
-        if gap >= 0.0 && gap <= tolerance {
-            return &segments[idx].speaker;
+        if gap >= 0.0 && gap < best_gap {
+            best_gap = gap;
+            best_speaker = Some(&segments[idx].speaker);
         }
     }
 
     // Previous segment
     if idx > 0 {
-        let prev = &segments[idx - 1];
-        let gap = time_secs - prev.end;
-        if gap >= 0.0 && gap <= tolerance {
-            return &prev.speaker;
+        let gap = time_secs - segments[idx - 1].end;
+        if gap >= 0.0 && gap < best_gap {
+            best_speaker = Some(&segments[idx - 1].speaker);
         }
     }
 
-    "UNKNOWN"
+    best_speaker.unwrap_or("UNKNOWN")
 }
 
 /// Parse a timestamp like "0:00" or "1:30" into seconds.
@@ -677,11 +681,14 @@ mod tests {
 
         assert_eq!(find_speaker(2.5, &segments), "SPEAKER_0");
         assert_eq!(find_speaker(7.0, &segments), "SPEAKER_1");
-        assert_eq!(find_speaker(15.0, &segments), "UNKNOWN");
+        // 5s past last segment — within 10s max gap, nearest is SPEAKER_1
+        assert_eq!(find_speaker(15.0, &segments), "SPEAKER_1");
+        // 11s past last segment — beyond 10s max gap
+        assert_eq!(find_speaker(21.0, &segments), "UNKNOWN");
     }
 
     #[test]
-    fn find_speaker_gap_fallback_prefers_next_speaker() {
+    fn find_speaker_gap_fallback_prefers_nearest() {
         // Segments with gaps — sorted by start time (as apply_speakers provides)
         let segments = vec![
             SpeakerSegment {
@@ -696,22 +703,40 @@ mod tests {
             },
         ];
 
-        // Timestamp 0.0 falls 0.045s before first segment — within 0.5s tolerance
+        // Timestamp 0.0 falls 0.045s before first segment — nearest is SPEAKER_0
         assert_eq!(find_speaker(0.0, &segments), "SPEAKER_0");
         // Timestamp 4.0 falls in gap: 0.02s from A end, 0.12s from B start
-        // Prefer next speaker (B) — they're about to talk
-        assert_eq!(find_speaker(4.0, &segments), "SPEAKER_1");
-        // Timestamp 8.6 is 0.1s past segment B — within 0.5s tolerance
+        // Nearest is SPEAKER_0 (0.02s away vs 0.12s)
+        assert_eq!(find_speaker(4.0, &segments), "SPEAKER_0");
+        // Timestamp 8.6 is 0.1s past segment B — nearest is SPEAKER_1
         assert_eq!(find_speaker(8.6, &segments), "SPEAKER_1");
-        // Timestamp 10.0 is 1.5s past segment B — beyond 0.5s tolerance
-        assert_eq!(find_speaker(10.0, &segments), "UNKNOWN");
-        // Timestamp 15.0 is far from any segment
-        assert_eq!(find_speaker(15.0, &segments), "UNKNOWN");
+        // Timestamp 10.0 is 1.5s past segment B — nearest is SPEAKER_1
+        assert_eq!(find_speaker(10.0, &segments), "SPEAKER_1");
     }
 
     #[test]
-    fn find_speaker_silence_stays_unknown() {
-        // Long silence gap between speakers — should NOT fabricate attribution
+    fn find_speaker_large_gap_stays_unknown() {
+        // Gap larger than 10s — should return UNKNOWN
+        let segments = vec![
+            SpeakerSegment {
+                speaker: "SPEAKER_0".into(),
+                start: 0.0,
+                end: 5.0,
+            },
+            SpeakerSegment {
+                speaker: "SPEAKER_1".into(),
+                start: 30.0,
+                end: 35.0,
+            },
+        ];
+
+        // Timestamp 17.0 is 12s from SPEAKER_0 end, 13s from SPEAKER_1 start — beyond 10s
+        assert_eq!(find_speaker(17.0, &segments), "UNKNOWN");
+    }
+
+    #[test]
+    fn find_speaker_moderate_gap_picks_nearest() {
+        // Gap within 10s between speakers — pick nearest
         let segments = vec![
             SpeakerSegment {
                 speaker: "SPEAKER_0".into(),
@@ -725,8 +750,10 @@ mod tests {
             },
         ];
 
-        // Timestamp 7.0 is 2s from both segments — beyond tolerance
-        assert_eq!(find_speaker(7.0, &segments), "UNKNOWN");
+        // Timestamp 7.0 is 2s from SPEAKER_0, 3s from SPEAKER_1 — nearest is SPEAKER_0
+        assert_eq!(find_speaker(7.0, &segments), "SPEAKER_0");
+        // Timestamp 8.0 is 3s from SPEAKER_0, 2s from SPEAKER_1 — nearest is SPEAKER_1
+        assert_eq!(find_speaker(8.0, &segments), "SPEAKER_1");
     }
 
     #[test]
