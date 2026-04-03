@@ -149,10 +149,15 @@ model = "$MODEL"
 [diarization]
 engine = "pyannote-rs"
 threshold = 0.3
+
+[voice]
+enabled = true
+match_threshold = 0.3
 TOML
 ok "Created $CONFIG_FILE"
 echo -e "  ${DIM}  model = $MODEL${RESET}"
 echo -e "  ${DIM}  diarization = pyannote-rs (threshold 0.3)${RESET}"
+echo -e "  ${DIM}  voice match_threshold = 0.3${RESET}"
 
 # ── Step 6: Verify ───────────────────────────────────────────
 step "Verifying setup"
