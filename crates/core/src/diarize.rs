@@ -256,6 +256,15 @@ pub fn apply_speakers(transcript: &str, result: &DiarizationResult) -> String {
             .unwrap_or(std::cmp::Ordering::Equal)
     });
 
+    // When only one speaker is detected, use that speaker for all unmatched
+    // timestamps instead of "UNKNOWN" — pyannote often has segment gaps for
+    // single-speaker recordings but the speaker is still the same person.
+    let sole_speaker: Option<&str> = if result.num_speakers == 1 {
+        sorted_segments.first().map(|s| s.speaker.as_str())
+    } else {
+        None
+    };
+
     let mut unknown_count = 0usize;
     let mut matched_count = 0usize;
 
@@ -267,9 +276,14 @@ pub fn apply_speakers(transcript: &str, result: &DiarizationResult) -> String {
                 let text = rest[bracket_end + 1..].trim();
 
                 if let Some(secs) = parse_timestamp(ts_str) {
-                    let speaker = find_speaker(secs, &sorted_segments);
+                    let mut speaker = find_speaker(secs, &sorted_segments);
                     if speaker == "UNKNOWN" {
-                        unknown_count += 1;
+                        if let Some(solo) = sole_speaker {
+                            speaker = solo;
+                            matched_count += 1;
+                        } else {
+                            unknown_count += 1;
+                        }
                     } else {
                         matched_count += 1;
                     }
